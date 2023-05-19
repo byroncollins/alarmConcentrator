@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.15
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=simple_bank
+  alarmConcentrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - BROKER=tcp://localhost:1883
+    depends_on:
+      - mosquitto
+    entrypoint:
+      [
+        "/app/wait-for.sh",
+        "mosquitto:1883",
+        "--",
+        "/app/start.sh"
+      ]
+    command: [ "/app/main" ]
