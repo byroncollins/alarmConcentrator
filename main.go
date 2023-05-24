@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"regexp"
@@ -21,6 +21,15 @@ import (
 var options = mqtt.NewClientOptions()
 
 func main() {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	debug := flag.Bool("debug", false, "sets log level to debug")
+	flag.Parse()
+
+	// Default level for this example is info, unless debug flag is present
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if *debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
 
 	config, err := util.LoadConfig(".")
 	if err != nil {
@@ -39,10 +48,10 @@ func main() {
 	options.OnConnect = connectHandler
 	options.OnConnectionLost = connectionLostHandler
 
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", config.Port))
+	listener, err := net.Listen("tcp4", ":"+strconv.Itoa(config.Port))
 
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal().Err(err).Msg("cannot create listener")
 		os.Exit(1)
 	}
 	defer listener.Close()
@@ -50,20 +59,13 @@ func main() {
 	for {
 		con, err := listener.Accept()
 		if err != nil {
-			log.Println(err)
+			log.Fatal().Err(err).Msg("listener.Accept failed")
 			continue
 		}
 
 		// If you want, you can increment a counter here and inject to handleClientRequest below as client identifier
 		go handleClientRequest(con)
 	}
-}
-
-func getEnv(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
-	}
-	return fallback
 }
 
 type CSVIPRecord struct {
@@ -100,16 +102,29 @@ func createCSVIPRecord(data [][]string) CSVIPRecord {
 	return CSVIPString
 }
 
+func sendMqttMessage(data string, topic string) {
+	client := mqtt.NewClient(options)
+	token := client.Connect()
+	if token.Wait() && token.Error() != nil {
+		panic(token.Error())
+	}
+
+	token = client.Publish(topic, 0, false, data)
+	token.Wait()
+
+	client.Disconnect(100)
+}
+
 var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
-	fmt.Printf("Message %s received on topic %s\n", msg.Payload(), msg.Topic())
+	log.Debug().Msg(fmt.Sprintf("Message %s received on topic %s\n", msg.Payload(), msg.Topic()))
 }
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-	fmt.Println("Connected")
+	log.Debug().Msg("Connected")
 }
 
 var connectionLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-	fmt.Printf("Connection Lost: %s\n", err.Error())
+	log.Error().Err(err).Msg("Connection Lost")
 }
 
 func handleClientRequest(conn net.Conn) {
@@ -122,60 +137,51 @@ func handleClientRequest(conn net.Conn) {
 		_, err := conn.Read(buf)
 		switch err {
 		case nil:
-			log.Println(string(buf))
+			log.Debug().Msg(string(buf))
 			r := csv.NewReader(strings.NewReader(string(buf)))
 			result, err := r.ReadAll()
 			if err != nil {
-				log.Fatal(err)
+				log.Error().Err(err).Msg("Error reading CSV")
 			}
-			fmt.Printf("Lines: %v", len(result))
-			fmt.Println()
+			log.Debug().Msg(fmt.Sprintf("Lines: %v", len(result)))
 			for i := range result {
 				// Element count.
-				fmt.Printf("Elements: %v", len(result[i]))
-				fmt.Println()
+				log.Debug().Msg(fmt.Sprintf("Element Count: %v", len(result[i])))
 				// Elements.
-				fmt.Println(result[i])
+				log.Debug().Msg(fmt.Sprintf("Elements: %s", result[i]))
 			}
 
 			CSVIPRecord := createCSVIPRecord(result)
 
 			jsonData, err := json.Marshal(CSVIPRecord)
 			if err != nil {
-				log.Fatal(err)
+				log.Error().Err(err).Msg("Error marshalling JSON")
 			}
 			data := string(jsonData)
 
 			// remove unicode null char "\u0000", UNLESS escaped, i.e."\\u0000"
 			if strings.Contains(data, `\u0000`) {
-				log.Printf("[TRACE] null unicode character detected in JSON value - removing if not escaped")
+				log.Debug().Msg("[TRACE] null unicode character detected in JSON value - removing if not escaped")
 				re := regexp.MustCompile(`((?:^|[^\\])(?:\\\\)*)(?:\\u0000)+`)
 				data = re.ReplaceAllString(data, "$1")
 			}
+			log.Debug().Msg(fmt.Sprintf(data))
 
-			fmt.Println(data)
+			//send data over Mqtt
+			sendMqttMessage(data, "topic/alarmConcentrator")
 
-			client := mqtt.NewClient(options)
-			token := client.Connect()
-			if token.Wait() && token.Error() != nil {
-				panic(token.Error())
-			}
-
-			topic := "topic/alarmConcentrator"
-			token = client.Publish(topic, 0, false, data)
-			token.Wait()
-
-			client.Disconnect(100)
+			// Responding to the client request
+			// Send sent message in response (kiss off)
+			conn.Write([]byte(buf))
 
 			return
 		case io.EOF:
-			log.Println("client closed the connection by terminating the process")
+			log.Debug().Msg("client closed the connection by terminating the process")
 			return
 		default:
-			log.Printf("error: %v\n", err)
+			log.Error().Err(err).Msg("error")
 			return
 		}
 
-		// Responding to the client request
 	}
 }

@@ -1,26 +1,22 @@
 version: "3.9"
 services:
-  mosquitto:
+  mosquitto_sub:
     image: eclipse-mosquitto:2.0.15
-    environment:
-      - POSTGRES_USER=root
-      - POSTGRES_PASSWORD=secret
-      - POSTGRES_DB=simple_bank
+    container_name: mosquitto_sub
+    depends_on:
+      - alarmconcentrator
+    command: mosquitto_sub -h mosquitto -p 1883 -t "topic/alarmConcentrator" -v
+    restart: unless-stopped
+  mosquitto:
+    container_name: mosquitto
+    image: eclipse-mosquitto:2.0.15
   alarmConcentrator:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: byroncollins/alarmconcentrator:2.0.2
     ports:
       - "8080:8080"
     environment:
-      - BROKER=tcp://localhost:1883
+      - BROKER=tcp://alarmconcentrator-mosquitto-1:1883
+      - PORT=8080
     depends_on:
       - mosquitto
-    entrypoint:
-      [
-        "/app/wait-for.sh",
-        "mosquitto:1883",
-        "--",
-        "/app/start.sh"
-      ]
     command: [ "/app/main" ]
